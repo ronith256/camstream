@@ -1,0 +1,23 @@
+Metadata-Version: 2.1
+Name: camstream
+Version: 0.1.0
+Summary: Real-time camera streaming application for edge devices
+Author: Your Name
+Author-email: your.email@example.com
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Requires-Python: >=3.8
+Requires-Dist: fastapi>=0.109.2
+Requires-Dist: uvicorn[standard]>=0.27.1
+Requires-Dist: websockets>=12.0
+Requires-Dist: python-multipart>=0.0.6
+Requires-Dist: pydantic>=2.6.1
+Requires-Dist: aiofiles>=23.2.1
+Requires-Dist: opencv-python>=4.9.0.80
+Requires-Dist: numpy>=1.26.3
+Requires-Dist: python-dotenv>=1.0.1

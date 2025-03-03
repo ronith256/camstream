@@ -1,0 +1,6 @@
+setup.py
+camstream.egg-info/PKG-INFO
+camstream.egg-info/SOURCES.txt
+camstream.egg-info/dependency_links.txt
+camstream.egg-info/requires.txt
+camstream.egg-info/top_level.txt

@@ -1,0 +1,91 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background-color: #b8c5d6; /* Light blue-gray background from mockup */
+}
+
+@layer components {
+  .camera-container {
+    @apply relative bg-black rounded-xl overflow-hidden shadow-lg;
+  }
+
+  .camera-controls {
+    @apply absolute bottom-4 left-1/2 transform -translate-x-1/2 
+           flex items-center justify-center gap-4 
+           bg-gray-800 bg-opacity-60 rounded-full 
+           px-6 py-3 z-10;
+  }
+
+  .control-button {
+    @apply flex items-center justify-center w-12 h-12 
+           rounded-full focus:outline-none transition-colors
+           border-2 border-transparent;
+  }
+
+  .photo-button {
+    @apply bg-white text-gray-800 hover:bg-gray-200;
+  }
+
+  .video-button {
+    @apply bg-white text-gray-800 hover:bg-gray-200;
+  }
+
+  .video-button-active {
+    @apply bg-accent text-white hover:bg-accent-hover;
+  }
+
+  .settings-button {
+    @apply bg-gray-700 text-white hover:bg-gray-600;
+  }
+
+  .camera-frame {
+    @apply w-full h-full object-contain;
+  }
+
+  .recent-captures {
+    @apply mt-6 rounded-xl bg-white bg-opacity-10 p-4;
+  }
+
+  .captures-header {
+    @apply flex items-center justify-between mb-4;
+  }
+
+  .captures-grid {
+    @apply grid grid-cols-3 gap-4;
+  }
+
+  .capture-group {
+    @apply bg-white bg-opacity-20 rounded-lg overflow-hidden;
+  }
+
+  .capture-group-header {
+    @apply flex items-center justify-between px-4 py-2 bg-gray-700 bg-opacity-50;
+  }
+
+  .capture-items {
+    @apply grid grid-cols-3 gap-2 p-2;
+  }
+
+  .gallery-grid {
+    @apply grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4;
+  }
+
+  .gallery-item {
+    @apply relative aspect-square rounded-lg overflow-hidden cursor-pointer
+           hover:scale-105 transition-transform duration-200 shadow-md;
+  }
+
+  .gallery-thumbnail {
+    @apply w-full h-full object-cover;
+  }
+}

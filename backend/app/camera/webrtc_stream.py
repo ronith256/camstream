@@ -36,6 +36,7 @@ class CameraVideoStreamTrack(VideoStreamTrack):
     def __init__(self, camera: Camera):
         super().__init__()
         self.camera = camera
+        self.camera_id = camera.camera_id
         self._frame_count = 0
         self._fps = camera.fps
         self._frame_time = 1 / self._fps
@@ -137,19 +138,21 @@ class WebRTCStreamManager:
     """
     Manages WebRTC peer connections for camera streaming.
     """
-    _instance = None
+    _instances = {}
     _lock = threading.Lock()
 
     @classmethod
     def get_instance(cls, camera: Camera) -> 'WebRTCStreamManager':
-        """Singleton pattern to ensure only one instance exists"""
+        """Singleton pattern to ensure one instance per camera"""
+        camera_id = camera.camera_id
         with cls._lock:
-            if cls._instance is None:
-                cls._instance = cls(camera)
-            return cls._instance
+            if camera_id not in cls._instances:
+                cls._instances[camera_id] = cls(camera)
+            return cls._instances[camera_id]
 
     def __init__(self, camera: Camera):
         self.camera = camera
+        self.camera_id = camera.camera_id
         self.peer_connections: Dict[str, RTCPeerConnection] = {}
         self.video_tracks: Dict[str, CameraVideoStreamTrack] = {}
         self.connection_states: Dict[str, str] = {}

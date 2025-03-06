@@ -3,7 +3,7 @@ import cv2
 import threading
 import asyncio
 import time
-from typing import Optional, Tuple, List, Dict
+from typing import Optional, Tuple, List, Dict, Any
 import numpy as np
 import logging
 from app.config.settings import settings
@@ -11,23 +11,50 @@ from app.config.settings import settings
 logger = logging.getLogger(__name__)
 
 class Camera:
-    _instance = None
+    _instances = {}
     _lock = threading.Lock()
     
     @classmethod
-    def get_instance(cls):
-        """Singleton pattern to ensure only one camera instance exists"""
+    def get_instance(cls, camera_id: str = None):
+        """Singleton pattern for multiple camera instances"""
+        if camera_id is None:
+            camera_id = settings.DEFAULT_CAMERA_ID
+            
         with cls._lock:
-            if cls._instance is None:
-                cls._instance = cls()
-            return cls._instance
+            if camera_id not in cls._instances:
+                # Get camera config from settings
+                if camera_id not in settings.CAMERAS:
+                    raise ValueError(f"Camera ID '{camera_id}' not found in settings")
+                    
+                camera_config = settings.CAMERAS[camera_id]
+                cls._instances[camera_id] = cls(
+                    camera_id=camera_id,
+                    camera_index=camera_config["index"],
+                    width=camera_config.get("width", settings.FRAME_WIDTH),
+                    height=camera_config.get("height", settings.FRAME_HEIGHT),
+                    fps=camera_config.get("fps", settings.FPS),
+                    name=camera_config.get("name", f"Camera {camera_id}")
+                )
+            return cls._instances[camera_id]
     
-    def __init__(self, camera_index: int = settings.CAMERA_INDEX):
-        """Initialize the camera - should only be called once through the singleton pattern"""
+    @classmethod
+    def get_all_instances(cls):
+        """Return all instantiated camera instances"""
+        with cls._lock:
+            # Ensure all configured cameras are instantiated
+            for camera_id in settings.CAMERAS:
+                cls.get_instance(camera_id)
+            return cls._instances
+    
+    def __init__(self, camera_id: str, camera_index: int, width: int = 640, height: int = 480, 
+                 fps: int = 30, name: str = "Camera"):
+        """Initialize the camera"""
+        self.camera_id = camera_id
         self.camera_index = camera_index
-        self.width = settings.FRAME_WIDTH
-        self.height = settings.FRAME_HEIGHT
-        self.fps = settings.FPS
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.name = name
         
         self.cap = None
         self.recording = False
@@ -62,7 +89,7 @@ class Camera:
     
     def initialize(self):
         """Initialize the camera"""
-        logger.info(f"Initializing camera with index {self.camera_index}")
+        logger.info(f"Initializing camera {self.camera_id} (index {self.camera_index})")
         try:
             self.cap = cv2.VideoCapture(self.camera_index)
             
@@ -76,21 +103,21 @@ class Camera:
             self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             self.fps = int(self.cap.get(cv2.CAP_PROP_FPS))
             
-            logger.info(f"Camera initialized: {self.width}x{self.height} @ {self.fps}fps")
+            logger.info(f"Camera {self.camera_id} initialized: {self.width}x{self.height} @ {self.fps}fps")
         except Exception as e:
-            logger.error(f"Failed to initialize camera: {str(e)}")
+            logger.error(f"Failed to initialize camera {self.camera_id}: {str(e)}")
             raise
     
     def register_client(self, client_id):
         """Register a new client that will use the camera"""
         self._clients.add(client_id)
-        logger.info(f"Client {client_id} registered. Total clients: {len(self._clients)}")
+        logger.info(f"Client {client_id} registered with camera {self.camera_id}. Total clients: {len(self._clients)}")
     
     def unregister_client(self, client_id):
         """Unregister a client that was using the camera"""
         if client_id in self._clients:
             self._clients.remove(client_id)
-            logger.info(f"Client {client_id} unregistered. Total clients: {len(self._clients)}")
+            logger.info(f"Client {client_id} unregistered from camera {self.camera_id}. Total clients: {len(self._clients)}")
     
     def is_active(self) -> bool:
         """Check if camera is active and working"""
@@ -112,7 +139,7 @@ class Camera:
         self._running = True
         self._capture_thread = threading.Thread(target=self._capture_frames, daemon=True)
         self._capture_thread.start()
-        logger.info("Background frame capture thread started")
+        logger.info(f"Background frame capture thread started for camera {self.camera_id}")
     
     def _capture_frames(self):
         """Background thread for continuous frame capture"""
@@ -138,7 +165,7 @@ class Camera:
                             # Use a copy to avoid interfering with the buffer
                             self.video_writer.write(frame.copy())
                         except Exception as e:
-                            logger.error(f"Error writing video frame: {str(e)}")
+                            logger.error(f"Error writing video frame for camera {self.camera_id}: {str(e)}")
                     
                     # Update stats
                     self._frame_count += 1
@@ -159,12 +186,12 @@ class Camera:
                     capture_start = time.time()
                 else:
                     # Try to reinitialize camera on failure
-                    logger.warning("Failed to capture frame, attempting to reinitialize camera")
+                    logger.warning(f"Failed to capture frame for camera {self.camera_id}, attempting to reinitialize")
                     self._error_count += 1
                     self.initialize()
                     time.sleep(0.5)  # Wait before retry
             except Exception as e:
-                logger.error(f"Error in frame capture thread: {str(e)}")
+                logger.error(f"Error in frame capture thread for camera {self.camera_id}: {str(e)}")
                 self._error_count += 1
                 time.sleep(0.5)  # Wait before retry
     
@@ -181,7 +208,7 @@ class Camera:
         # Use a shorter lock period and copy the frame quickly
         with self._frame_lock:
             if self._frame_buffer is None:
-                raise Exception("Failed to capture frame")
+                raise Exception(f"Failed to capture frame from camera {self.camera_id}")
             frame = self._frame_buffer.copy()
             self._frame_ready.clear()
         
@@ -201,7 +228,7 @@ class Camera:
         # If no cached frame, capture one directly as fallback
         ret, frame = self.cap.read()
         if not ret:
-            raise Exception("Failed to capture frame")
+            raise Exception(f"Failed to capture frame from camera {self.camera_id}")
         return frame
     
     def start_recording(self, output_path: str):
@@ -221,7 +248,7 @@ class Camera:
             
             self.recording = True
             self.video_path = output_path
-            logger.info(f"Started recording to {output_path}")
+            logger.info(f"Started recording to {output_path} with camera {self.camera_id}")
         finally:
             self._operation_in_progress = False
         
@@ -237,7 +264,7 @@ class Camera:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, lambda: self.start_recording(output_path))
             
-            logger.info(f"Started recording asynchronously to {output_path}")
+            logger.info(f"Started recording asynchronously to {output_path} with camera {self.camera_id}")
         finally:
             self._operation_in_progress = False
 
@@ -261,7 +288,7 @@ class Camera:
             video_path = self.video_path
             self.video_path = None
             
-            logger.info(f"Stopped recording to {video_path}")
+            logger.info(f"Stopped recording to {video_path} with camera {self.camera_id}")
             return video_path
         finally:
             self._operation_in_progress = False
@@ -283,7 +310,7 @@ class Camera:
             video_path = self.video_path
             self.video_path = None
             
-            logger.info(f"Stopped recording to {video_path}")
+            logger.info(f"Stopped recording to {video_path} with camera {self.camera_id}")
             return video_path
         finally:
             self._operation_in_progress = False
@@ -291,6 +318,8 @@ class Camera:
     def get_stats(self) -> Dict:
         """Get camera statistics"""
         return {
+            "camera_id": self.camera_id,
+            "name": self.name,
             "active": self.is_active(),
             "recording": self.recording,
             "resolution": f"{self.width}x{self.height}",
@@ -303,7 +332,7 @@ class Camera:
     
     def release(self):
         """Release camera resources"""
-        logger.info("Releasing camera resources")
+        logger.info(f"Releasing camera {self.camera_id} resources")
         self._running = False
         
         if self._capture_thread:
@@ -319,9 +348,29 @@ class Camera:
 
 
 # Function to get the camera singleton instance
-def get_camera():
-    camera = Camera.get_instance()
+def get_camera(camera_id: str = None):
+    if camera_id is None:
+        camera_id = settings.DEFAULT_CAMERA_ID
+        
+    camera = Camera.get_instance(camera_id)
     try:
         yield camera
     finally:
         pass  # Don't release here, we're using a singleton
+
+# Get all available cameras
+def get_available_cameras():
+    """Return a list of all available cameras from settings"""
+    cameras = []
+    for camera_id, config in settings.CAMERAS.items():
+        cameras.append({
+            "id": camera_id,
+            "name": config.get("name", f"Camera {camera_id}"),
+            "index": config.get("index"),
+            "resolution": {
+                "width": config.get("width", settings.FRAME_WIDTH),
+                "height": config.get("height", settings.FRAME_HEIGHT)
+            },
+            "fps": config.get("fps", settings.FPS)
+        })
+    return cameras

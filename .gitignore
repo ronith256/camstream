@@ -24,3 +24,4 @@ dist-ssr
 *.sw?
 
 .backend/media/*
+__pycache__

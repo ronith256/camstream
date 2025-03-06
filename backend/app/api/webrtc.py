@@ -1,5 +1,4 @@
-# backend/app/api/webrtc.py
-from fastapi import APIRouter, HTTPException, Depends, Body
+from fastapi import APIRouter, HTTPException, Depends, Body, Query
 from pydantic import BaseModel, Field
 from typing import Dict, Optional, Any, List
 import uuid
@@ -32,6 +31,7 @@ class WebRTCSession(BaseModel):
     WebRTC session model.
     """
     id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()))
+    camera_id: Optional[str] = None
 
 class WebRTCOfferResponse(BaseModel):
     """
@@ -40,11 +40,13 @@ class WebRTCOfferResponse(BaseModel):
     type: str
     sdp: str
     session_id: str
+    camera_id: str
 
 @webrtc_router.post("/offer", response_model=WebRTCOfferResponse)
 async def process_offer(
     session: WebRTCSession = Body(...),
     offer: RTCSessionDescription = Body(...),
+    camera: Camera = Depends(get_camera),
     manager: WebRTCStreamManager = Depends(get_webrtc_manager)
 ):
     """
@@ -53,7 +55,7 @@ async def process_offer(
     try:
         # Use provided session ID or generate a new one
         session_id = session.id if session.id else str(uuid.uuid4())
-        logger.info(f"Processing WebRTC offer for session {session_id}")
+        logger.info(f"Processing WebRTC offer for session {session_id} on camera {camera.camera_id}")
         
         answer = await manager.process_offer(session_id, offer.dict())
         
@@ -61,7 +63,8 @@ async def process_offer(
         return WebRTCOfferResponse(
             type=answer["type"],
             sdp=answer["sdp"],
-            session_id=answer["session_id"]
+            session_id=answer["session_id"],
+            camera_id=camera.camera_id
         )
     except Exception as e:
         logger.error(f"Error processing WebRTC offer: {str(e)}")
@@ -71,13 +74,15 @@ async def process_offer(
 async def process_ice_candidate(
     session_id: str,
     candidate: RTCIceCandidateInit = Body(...),
+    camera_id: Optional[str] = Query(None),
+    camera: Camera = Depends(get_camera),
     manager: WebRTCStreamManager = Depends(get_webrtc_manager)
 ):
     """
     Process an ICE candidate from a client.
     """
     try:
-        logger.info(f"Processing ICE candidate for session {session_id}")
+        logger.info(f"Processing ICE candidate for session {session_id} on camera {camera.camera_id}")
         
         # Convert to format expected by aiortc
         # The key fix: aiortc RTCIceCandidate expects positional args, not keyword args
@@ -88,16 +93,18 @@ async def process_ice_candidate(
         }
         
         await manager.process_ice_candidate(session_id, candidate_dict)
-        return {"success": True}
+        return {"success": True, "camera_id": camera.camera_id}
     except Exception as e:
         logger.error(f"Error processing ICE candidate: {str(e)}")
         # Don't raise an exception for ICE candidate processing errors
         # as it could disrupt the connection establishment
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": str(e), "camera_id": camera.camera_id}
 
 @webrtc_router.get("/session/{session_id}/status", response_model=Dict[str, Any])
 async def get_session_status(
     session_id: str,
+    camera_id: Optional[str] = Query(None),
+    camera: Camera = Depends(get_camera),
     manager: WebRTCStreamManager = Depends(get_webrtc_manager)
 ):
     """
@@ -105,24 +112,27 @@ async def get_session_status(
     """
     try:
         status = manager.get_session_status(session_id)
+        status["camera_id"] = camera.camera_id
         return status
     except Exception as e:
         logger.error(f"Error getting WebRTC session status: {str(e)}")
-        return {"connected": False, "error": str(e)}
+        return {"connected": False, "error": str(e), "camera_id": camera.camera_id}
 
 @webrtc_router.delete("/session/{session_id}", response_model=Dict[str, Any])
 async def close_session(
     session_id: str,
+    camera_id: Optional[str] = Query(None),
+    camera: Camera = Depends(get_camera),
     manager: WebRTCStreamManager = Depends(get_webrtc_manager)
 ):
     """
     Close a WebRTC session.
     """
     try:
-        logger.info(f"Closing WebRTC session {session_id}")
+        logger.info(f"Closing WebRTC session {session_id} on camera {camera.camera_id}")
         await manager.close_peer_connection(session_id)
-        return {"success": True}
+        return {"success": True, "camera_id": camera.camera_id}
     except Exception as e:
         logger.error(f"Error closing WebRTC session: {str(e)}")
         # Don't raise an exception, just return the error
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": str(e), "camera_id": camera.camera_id}

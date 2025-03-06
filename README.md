@@ -1,4 +1,5 @@
-Run backend first 
+Install and Run backend first
+python setup.py 
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 go to frontend folder 

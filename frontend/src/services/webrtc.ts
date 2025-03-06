@@ -15,6 +15,7 @@ export interface RTCIceCandidateInit {
 
 export interface WebRTCSession {
   id: string;
+  camera_id?: string;  // Add camera_id support
 }
 
 // Connection state type
@@ -24,6 +25,7 @@ class WebRTCService {
   private peerConnection: RTCPeerConnection | null = null;
   private videoElement: HTMLVideoElement | null = null;
   private sessionId: string | null = null;
+  private cameraId: string | null = null;  // Add camera ID property
   private stream: MediaStream | null = null;
   private connectionState: ConnectionState = 'new';
   private pendingCandidates: RTCIceCandidateInit[] = [];
@@ -331,14 +333,16 @@ class WebRTCService {
     this.log(`Executing reconnect attempt ${this.reconnectAttempts}`);
     
     try {
-      // Preserve session ID for reconnection
+      // Preserve session ID and camera ID for reconnection
       const oldSessionId = this.sessionId;
+      const oldCameraId = this.cameraId;
       
       // Clean up old connection but maintain the session
       this.cleanupPeerConnection();
       this.sessionId = oldSessionId;
+      this.cameraId = oldCameraId;
       
-      // Connect with the existing session ID
+      // Connect with the existing session ID and camera ID
       await this.connect();
       
       this.log('Reconnection successful');
@@ -413,8 +417,9 @@ class WebRTCService {
     // Clean up peer connection
     this.cleanupPeerConnection();
     
-    // Clear session ID for a full disconnect
+    // Clear session ID and camera ID for a full disconnect
     this.sessionId = null;
+    this.cameraId = null;
     
     // Clear pending candidates
     this.pendingCandidates = [];
@@ -429,11 +434,12 @@ class WebRTCService {
     }
   }
 
-  // Initialize with video element
-  public async initialize(videoElement: HTMLVideoElement) {
+  // Initialize with video element and camera ID
+  public async initialize(videoElement: HTMLVideoElement, cameraId?: string) {
     return this.withConnectionLock(async () => {
-      this.log('Initializing WebRTC service');
+      this.log(`Initializing WebRTC service for camera: ${cameraId || 'default'}`);
       this.videoElement = videoElement;
+      this.cameraId = cameraId || null;
       
       // Don't create peer connection yet - wait for connect call
     });
@@ -476,7 +482,7 @@ class WebRTCService {
         return;
       }
 
-      this.log('Starting connection process');
+      this.log(`Starting connection process for camera: ${this.cameraId || 'default'}`);
       this.updateConnectionState('connecting');
       
       try {
@@ -514,15 +520,25 @@ class WebRTCService {
           new Promise<void>(resolve => setTimeout(resolve, 2000))
         ]);
 
-        // Send offer to server
-        this.log('Sending offer to server');
-        const response = await fetch(`${API_BASE_URL}/webrtc/offer`, {
+        // Prepare the session object with camera ID if available
+        const session: WebRTCSession = { 
+          id: this.sessionId || undefined,
+          camera_id: this.cameraId || undefined
+        };
+
+        // Send offer to server, including camera ID in the query string if needed
+        this.log(`Sending offer to server for camera: ${this.cameraId || 'default'}`);
+        const endpoint = this.cameraId 
+          ? `${API_BASE_URL}/webrtc/offer?camera_id=${this.cameraId}`
+          : `${API_BASE_URL}/webrtc/offer`;
+
+        const response = await fetch(endpoint, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            session: { id: this.sessionId || undefined },
+            session,
             offer: {
               type: pc.localDescription?.type || offer.type,
               sdp: pc.localDescription?.sdp || offer.sdp,
@@ -537,10 +553,15 @@ class WebRTCService {
         // Parse response
         const data = await response.json();
         
-        // Store session ID
+        // Store session ID and camera ID from response
         if (data.session_id) {
           this.sessionId = data.session_id;
           this.log(`Received session ID: ${this.sessionId}`);
+        }
+        
+        if (data.camera_id) {
+          this.cameraId = data.camera_id;
+          this.log(`Confirmed camera ID: ${this.cameraId}`);
         }
 
         // Set remote description (server's answer)
@@ -590,7 +611,13 @@ class WebRTCService {
 
     try {
       this.log('Sending ICE candidate to server');
-      const response = await fetch(`${API_BASE_URL}/webrtc/icecandidate/${this.sessionId}`, {
+      
+      // Add camera ID to endpoint if available
+      const endpoint = this.cameraId 
+        ? `${API_BASE_URL}/webrtc/icecandidate/${this.sessionId}?camera_id=${this.cameraId}`
+        : `${API_BASE_URL}/webrtc/icecandidate/${this.sessionId}`;
+        
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -617,15 +644,20 @@ class WebRTCService {
         return;
       }
 
-      this.log('Disconnecting WebRTC connection');
+      this.log(`Disconnecting WebRTC connection for camera: ${this.cameraId || 'default'}`);
       
       try {
         // Close session on server
         if (this.sessionId) {
           this.log(`Closing session ${this.sessionId} on server`);
           
+          // Add camera ID to the endpoint if available
+          const endpoint = this.cameraId 
+            ? `${API_BASE_URL}/webrtc/session/${this.sessionId}?camera_id=${this.cameraId}`
+            : `${API_BASE_URL}/webrtc/session/${this.sessionId}`;
+          
           try {
-            await fetch(`${API_BASE_URL}/webrtc/session/${this.sessionId}`, {
+            await fetch(endpoint, {
               method: 'DELETE',
             });
           } catch (error) {
@@ -663,12 +695,14 @@ class WebRTCService {
     return this.withConnectionLock(async () => {
       this.log('Forcing reconnection');
       
-      // Preserve session ID
+      // Preserve session ID and camera ID
       const oldSessionId = this.sessionId;
+      const oldCameraId = this.cameraId;
       
-      // Clean up but keep the session ID
+      // Clean up but keep the session ID and camera ID
       this.cleanupPeerConnection();
       this.sessionId = oldSessionId;
+      this.cameraId = oldCameraId;
       
       // Reconnect
       await this.connect();

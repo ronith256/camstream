@@ -1,7 +1,7 @@
 // frontend/src/contexts/CameraContext.tsx
 import React, { createContext, useState, useContext, useEffect, useRef, ReactNode, useCallback } from 'react';
-import { CameraStatus } from '../types/types';
-import { getCameraStatus, takePhoto, startRecording, stopRecording } from '../services/api';
+import { CameraStatus, CameraInfo } from '../types/types';
+import { getCameraStatus, takePhoto, startRecording, stopRecording, getAvailableCameras } from '../services/api';
 import webRTCService from '../services/webrtc';
 
 interface CameraContextType {
@@ -14,6 +14,9 @@ interface CameraContextType {
   isPhotoLoading: boolean;
   isRecordingLoading: boolean;
   error: string | null;
+  availableCameras: CameraInfo[];
+  selectedCameraId: string;
+  setSelectedCameraId: (cameraId: string) => void;
   startStream: () => Promise<void>;
   stopStream: () => Promise<void>;
   capturePhoto: () => Promise<string>;
@@ -21,6 +24,7 @@ interface CameraContextType {
   stopVideoRecording: () => Promise<string>;
   resetError: () => void;
   reconnect: () => Promise<void>;
+  loadAvailableCameras: () => Promise<CameraInfo[]>;
 }
 
 const CameraContext = createContext<CameraContextType | undefined>(undefined);
@@ -36,6 +40,10 @@ export const CameraProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [isPhotoLoading, setIsPhotoLoading] = useState(false);
   const [isRecordingLoading, setIsRecordingLoading] = useState(false);
   
+  // Camera selection state
+  const [availableCameras, setAvailableCameras] = useState<CameraInfo[]>([]);
+  const [selectedCameraId, setSelectedCameraId] = useState<string>('');
+  
   // Camera status from backend
   const [cameraStatus, setCameraStatus] = useState<CameraStatus | null>(null);
   
@@ -49,6 +57,30 @@ export const CameraProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const videoRef = useRef<HTMLVideoElement>(null);
   const statusPollingRef = useRef<NodeJS.Timeout | null>(null);
   const statusPollingIntervalRef = useRef<number>(5000);
+  
+  // Load available cameras
+  const loadAvailableCameras = useCallback(async () => {
+    try {
+      const cameras = await getAvailableCameras();
+      setAvailableCameras(cameras);
+      
+      // Auto-select the first camera if none is selected
+      if (!selectedCameraId && cameras.length > 0) {
+        setSelectedCameraId(cameras[0].id);
+      }
+      
+      return cameras;
+    } catch (error) {
+      console.error('Failed to fetch available cameras:', error);
+      setError('Failed to load available cameras');
+      return [];
+    }
+  }, [selectedCameraId]);
+  
+  // Load cameras on mount
+  useEffect(() => {
+    loadAvailableCameras();
+  }, [loadAvailableCameras]);
   
   // Clear error state
   const resetError = useCallback(() => {
@@ -98,18 +130,30 @@ export const CameraProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     };
   }, []);
   
+  // Reset connection when camera changes
+  useEffect(() => {
+    if (selectedCameraId && (connected || connecting)) {
+      // Disconnect from current camera
+      stopStream().then(() => {
+        // Connect to new camera
+        startStream();
+      }).catch(console.error);
+    }
+  }, [selectedCameraId]);
+  
   // Poll the camera status from the backend
   const fetchCameraStatus = useCallback(async () => {
-    // Skip if we're loading a photo or connecting
-    if (isPhotoLoading && connecting) return;
+    // Skip if we're loading a photo or connecting or no camera selected
+    if (isPhotoLoading || connecting || !selectedCameraId) return;
     
     try {
-      const status = await getCameraStatus();
+      const status = await getCameraStatus(selectedCameraId);
       
       // Only update if there's a change to avoid unnecessary renders
       if (!cameraStatus || 
           cameraStatus.status !== status.status ||
-          cameraStatus.recording !== status.recording) {
+          cameraStatus.recording !== status.recording ||
+          cameraStatus.camera_id !== status.camera_id) {
         
         setCameraStatus(status);
         setRecording(status.recording);
@@ -127,10 +171,13 @@ export const CameraProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       // Just increase polling interval on error
       statusPollingIntervalRef.current = Math.min(30000, statusPollingIntervalRef.current * 1.5);
     }
-  }, [isPhotoLoading, connecting, cameraStatus]);
+  }, [isPhotoLoading, connecting, cameraStatus, selectedCameraId]);
   
   // Set up status polling
   useEffect(() => {
+    // Skip if no camera selected
+    if (!selectedCameraId) return;
+    
     // Initial status check
     fetchCameraStatus();
     
@@ -150,16 +197,21 @@ export const CameraProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     
     scheduleNextPoll();
     
-    // Cleanup on unmount
+    // Cleanup on unmount or camera change
     return () => {
       if (statusPollingRef.current) {
         clearTimeout(statusPollingRef.current);
       }
     };
-  }, [fetchCameraStatus]);
+  }, [fetchCameraStatus, selectedCameraId]);
   
   // Start WebRTC stream
   const startStream = async () => {
+    if (!selectedCameraId) {
+      setError('No camera selected');
+      return;
+    }
+    
     if (streaming || connecting) {
       console.log('Already streaming or connecting');
       return;
@@ -169,14 +221,15 @@ export const CameraProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       setConnecting(true);
       setError(null);
       
-      console.log('Initializing WebRTC connection');
+      console.log(`Initializing WebRTC connection for camera ${selectedCameraId}`);
       
       // Initialize WebRTC with video element
       if (videoRef.current) {
-        await webRTCService.initialize(videoRef.current);
+        // Pass the camera ID to the WebRTC service
+        await webRTCService.initialize(videoRef.current, selectedCameraId);
         
         // Connect to camera stream
-        console.log('Connecting to camera stream');
+        console.log(`Connecting to camera stream for ${selectedCameraId}`);
         await webRTCService.connect();
         
         // Connection state will be updated via event handler
@@ -188,7 +241,7 @@ export const CameraProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       }
     } catch (error) {
       console.error('Failed to start camera stream:', error);
-      setError('Failed to connect to camera stream. Please try again.');
+      setError(`Failed to connect to camera ${selectedCameraId}. Please try again.`);
       setConnecting(false);
       setConnected(false);
       setStreaming(false);
@@ -234,6 +287,10 @@ export const CameraProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   
   // Capture a photo
   const capturePhoto = async (): Promise<string> => {
+    if (!selectedCameraId) {
+      throw new Error('No camera selected');
+    }
+    
     if (!streaming) {
       throw new Error('Camera is not streaming. Please start the stream first.');
     }
@@ -249,8 +306,8 @@ export const CameraProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       // Tell WebRTC service that a media operation is beginning
       webRTCService.beginMediaOperation();
       
-      console.log('Taking photo');
-      const result = await takePhoto();
+      console.log(`Taking photo with camera ${selectedCameraId}`);
+      const result = await takePhoto(selectedCameraId);
       
       // Force refresh status after taking photo
       setTimeout(fetchCameraStatus, 500);
@@ -270,6 +327,10 @@ export const CameraProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   
   // Start video recording
   const startVideoRecording = async (): Promise<string> => {
+    if (!selectedCameraId) {
+      throw new Error('No camera selected');
+    }
+    
     if (!streaming) {
       throw new Error('Camera is not streaming. Please start the stream first.');
     }
@@ -285,8 +346,8 @@ export const CameraProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       // Tell WebRTC service that a media operation is beginning
       webRTCService.beginMediaOperation();
       
-      console.log('Starting video recording');
-      const result = await startRecording();
+      console.log(`Starting video recording with camera ${selectedCameraId}`);
+      const result = await startRecording(selectedCameraId);
       setRecording(true);
       
       // Force refresh status after starting recording
@@ -307,6 +368,10 @@ export const CameraProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   
   // Stop video recording
   const stopVideoRecording = async (): Promise<string> => {
+    if (!selectedCameraId) {
+      throw new Error('No camera selected');
+    }
+    
     if (!recording) {
       throw new Error('No active recording to stop.');
     }
@@ -322,8 +387,8 @@ export const CameraProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       // Tell WebRTC service that a media operation is beginning
       webRTCService.beginMediaOperation();
       
-      console.log('Stopping video recording');
-      const result = await stopRecording();
+      console.log(`Stopping video recording for camera ${selectedCameraId}`);
+      const result = await stopRecording(selectedCameraId);
       setRecording(false);
       
       // Force refresh status after stopping recording
@@ -366,6 +431,9 @@ export const CameraProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     isPhotoLoading,
     isRecordingLoading,
     error,
+    availableCameras,
+    selectedCameraId,
+    setSelectedCameraId,
     startStream,
     stopStream,
     capturePhoto,
@@ -373,6 +441,7 @@ export const CameraProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     stopVideoRecording,
     resetError,
     reconnect,
+    loadAvailableCameras,
   };
   
   return <CameraContext.Provider value={value}>{children}</CameraContext.Provider>;

@@ -1,8 +1,9 @@
 // frontend/src/components/CameraView/LiveView.tsx
 import React, { useEffect, useState } from 'react';
 import { useCamera } from '../../contexts/CameraContext';
-import { Camera, Video, RefreshCw, WifiOff } from 'lucide-react';
+import { Camera, RefreshCw, WifiOff } from 'lucide-react';
 import CameraControls from './CameraControls';
+import CameraSelector from '../UI/CameraSelector';
 import Toast from '../UI/Toast';
 
 const LiveView: React.FC = () => {
@@ -17,13 +18,16 @@ const LiveView: React.FC = () => {
     isRecordingLoading,
     startStream,
     resetError,
-    reconnect
+    reconnect,
+    selectedCameraId,
+    setSelectedCameraId,
+    availableCameras
   } = useCamera();
 
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [connectionAttempts, setConnectionAttempts] = useState(0);
 
-  // Start streaming when component mounts
+  // Start streaming when component mounts or camera changes
   useEffect(() => {
     const initStream = async () => {
       try {
@@ -36,10 +40,10 @@ const LiveView: React.FC = () => {
       }
     };
     
-    if (!connected && !connecting) {
+    if (selectedCameraId && !connected && !connecting) {
       initStream();
     }
-  }, [startStream, connected, connecting]);
+  }, [startStream, connected, connecting, selectedCameraId]);
 
   // Show toast message
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
@@ -63,43 +67,60 @@ const LiveView: React.FC = () => {
 
   // Any media operation in progress?
   const isLoading = isPhotoLoading || isRecordingLoading;
+  
+  // Handle camera change
+  const handleCameraChange = (cameraId: string) => {
+    if (cameraId !== selectedCameraId) {
+      setSelectedCameraId(cameraId);
+    }
+  };
 
   return (
     <div className="flex flex-col w-full h-full">
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-semibold">Live View</h1>
-        <div className="flex items-center gap-2">
-          {connecting && !isLoading ? (
-            <span className="text-sm flex items-center gap-1">
-              <RefreshCw size={14} className="animate-spin" />
-              <span>Connecting...</span>
-            </span>
-          ) : (
-            <>
-              <span className={`h-3 w-3 rounded-full ${streaming ? 'bg-green-500' : 'bg-red-500'}`}></span>
-              <span className="text-sm">{streaming ? 'Connected' : 'Disconnected'}</span>
-            </>
-          )}
+        
+        <div className="flex items-center gap-4">
+          {/* Camera Selector */}
+          <CameraSelector 
+            selectedCameraId={selectedCameraId}
+            onCameraChange={handleCameraChange}
+            disabled={isLoading}
+          />
           
-          {recording && (
-            <div className="flex items-center gap-1 text-red-500">
-              <span className="animate-pulse h-3 w-3 rounded-full bg-red-500"></span>
-              <span className="text-sm">Recording</span>
-              {isRecordingLoading && (
-                <span className="text-xs">(saving...)</span>
-              )}
-            </div>
-          )}
-          
-          {!streaming && !connecting && (
-            <button
-              onClick={handleReconnect}
-              className="ml-2 p-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600"
-              disabled={connecting || isLoading}
-            >
-              <RefreshCw size={14} />
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {connecting && !isLoading ? (
+              <span className="text-sm flex items-center gap-1">
+                <RefreshCw size={14} className="animate-spin" />
+                <span>Connecting...</span>
+              </span>
+            ) : (
+              <>
+                <span className={`h-3 w-3 rounded-full ${streaming ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                <span className="text-sm">{streaming ? 'Connected' : 'Disconnected'}</span>
+              </>
+            )}
+            
+            {recording && (
+              <div className="flex items-center gap-1 text-red-500">
+                <span className="animate-pulse h-3 w-3 rounded-full bg-red-500"></span>
+                <span className="text-sm">Recording</span>
+                {isRecordingLoading && (
+                  <span className="text-xs">(saving...)</span>
+                )}
+              </div>
+            )}
+            
+            {!streaming && !connecting && (
+              <button
+                onClick={handleReconnect}
+                className="ml-2 p-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600"
+                disabled={connecting || isLoading}
+              >
+                <RefreshCw size={14} />
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -129,6 +150,11 @@ const LiveView: React.FC = () => {
               <>
                 <Camera size={48} />
                 <p>No stream available</p>
+                {selectedCameraId && (
+                  <p className="text-sm mt-1">
+                    Selected camera: {availableCameras.find(c => c.id === selectedCameraId)?.name || selectedCameraId}
+                  </p>
+                )}
               </>
             )}
           </div>

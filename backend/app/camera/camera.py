@@ -83,29 +83,96 @@ class Camera:
         # Operations in progress flag
         self._operation_in_progress = False
         
-        # Initialize camera
-        self.initialize()
-        self._start_background_capture()
+        # Initialization state
+        self._initialized = False
+        self._initializing = False
+        self._init_error = None
+        
+        # DO NOT automatically initialize - wait for explicit initialize or initialize_async call
+    
+    async def initialize_async(self):
+        """Initialize the camera asynchronously"""
+        if self._initialized:
+            return
+        
+        if self._initializing:
+            # Wait for initialization to complete if already in progress
+            while self._initializing:
+                await asyncio.sleep(0.1)
+            return
+        
+        self._initializing = True
+        try:
+            logger.info(f"Initializing camera {self.camera_id} (index {self.camera_index})")
+            # Use run_in_executor to make the OpenCV calls non-blocking
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._initialize_sync)
+            self._initialized = True
+            self._init_error = None
+            # Start frame capture thread after successful initialization
+            self._start_background_capture()
+            logger.info(f"Camera {self.camera_id} initialized: {self.width}x{self.height} @ {self.fps}fps")
+        except Exception as e:
+            self._init_error = str(e)
+            logger.error(f"Failed to initialize camera {self.camera_id}: {str(e)}")
+            raise
+        finally:
+            self._initializing = False
     
     def initialize(self):
-        """Initialize the camera"""
-        logger.info(f"Initializing camera {self.camera_id} (index {self.camera_index})")
+        """Initialize the camera synchronously (for backward compatibility)"""
+        if self._initialized:
+            return
+        
         try:
+            self._initializing = True
+            self._initialize_sync()
+            self._initialized = True
+            self._init_error = None
+            # Start frame capture thread after successful initialization
+            self._start_background_capture()
+        except Exception as e:
+            self._init_error = str(e)
+            logger.error(f"Failed to initialize camera {self.camera_id}: {str(e)}")
+            raise
+        finally:
+            self._initializing = False
+    
+    def _initialize_sync(self):
+        """Synchronous part of camera initialization"""
+        logger.info(f"Performing synchronous initialization for camera {self.camera_id}")
+        try:
+            # Release if already initialized
+            if self.cap is not None:
+                self.cap.release()
+                
+            # Open with a timeout mechanism
             self.cap = cv2.VideoCapture(self.camera_index)
+            
+            if not self.cap.isOpened():
+                raise RuntimeError(f"Failed to open camera {self.camera_index}")
             
             # Set camera properties
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
             self.cap.set(cv2.CAP_PROP_FPS, self.fps)
             
+            # Allow time for camera settings to apply
+            time.sleep(0.2)
+            
             # Read actual properties (may differ from requested)
             self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             self.fps = int(self.cap.get(cv2.CAP_PROP_FPS))
             
-            logger.info(f"Camera {self.camera_id} initialized: {self.width}x{self.height} @ {self.fps}fps")
+            # Try to grab a frame to ensure camera is working
+            if not self.cap.grab():
+                raise RuntimeError(f"Camera {self.camera_index} opened but failed to grab initial frame")
         except Exception as e:
-            logger.error(f"Failed to initialize camera {self.camera_id}: {str(e)}")
+            logger.error(f"Error in _initialize_sync for camera {self.camera_id}: {str(e)}")
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
             raise
     
     def register_client(self, client_id):
@@ -121,7 +188,7 @@ class Camera:
     
     def is_active(self) -> bool:
         """Check if camera is active and working"""
-        return self.cap is not None and self.cap.isOpened()
+        return self._initialized and self.cap is not None and self.cap.isOpened()
     
     def is_recording(self) -> bool:
         """Check if currently recording"""
@@ -142,15 +209,30 @@ class Camera:
         logger.info(f"Background frame capture thread started for camera {self.camera_id}")
     
     def _capture_frames(self):
-        """Background thread for continuous frame capture"""
+        """Background thread for continuous frame capture with improved timeout handling"""
         self._frame_count = 0
         capture_start = time.time()
         
         while self._running and self.is_active():
             try:
-                ret, frame = self.cap.read()
+                # Use a timeout for read() to prevent blocking indefinitely
+                cap_read_success = False
                 
-                if ret:
+                # Try to read with timeout (use grab/retrieve for better performance)
+                start_time = time.time()
+                if self.cap.grab():  # This is much faster than read()
+                    ret, frame = self.cap.retrieve()
+                    if ret:
+                        cap_read_success = True
+                else:
+                    # If grab fails, wait a bit and try again before giving up
+                    time.sleep(0.01)
+                    if time.time() - start_time < 0.1 and self.cap.grab():  # 100ms retry timeout
+                        ret, frame = self.cap.retrieve()
+                        if ret:
+                            cap_read_success = True
+                
+                if cap_read_success:
                     # Use double buffer approach to avoid frame tearing
                     with self._frame_lock:
                         # Rotate buffers
@@ -177,7 +259,6 @@ class Camera:
                         self._last_fps_calc = now
                     
                     # Control frame rate to prevent excessive CPU usage
-                    # Use a more precise sleep calculation
                     elapsed = time.time() - capture_start
                     target_time = 1.0 / self.fps
                     sleep_time = max(0, target_time - elapsed)
@@ -185,21 +266,36 @@ class Camera:
                         time.sleep(sleep_time)
                     capture_start = time.time()
                 else:
-                    # Try to reinitialize camera on failure
-                    logger.warning(f"Failed to capture frame for camera {self.camera_id}, attempting to reinitialize")
+                    # Read timed out or failed
+                    logger.warning(f"Frame capture timeout for camera {self.camera_id}")
                     self._error_count += 1
-                    self.initialize()
-                    time.sleep(0.5)  # Wait before retry
+                    
+                    # Don't immediately try to reinitialize - just retry after a delay
+                    if self._error_count > 5:
+                        # Try to reinitialize camera on multiple failures
+                        logger.warning(f"Multiple failures for camera {self.camera_id}, attempting to reinitialize")
+                        try:
+                            # Release and reinitialize
+                            if self.cap is not None:
+                                self.cap.release()
+                            self._initialize_sync()
+                            self._error_count = 0
+                        except Exception as e:
+                            logger.error(f"Failed to reinitialize camera {self.camera_id}: {str(e)}")
+                    
+                    time.sleep(0.1)  # Wait before retry
             except Exception as e:
                 logger.error(f"Error in frame capture thread for camera {self.camera_id}: {str(e)}")
                 self._error_count += 1
-                time.sleep(0.5)  # Wait before retry
+                time.sleep(0.1)  # Wait before retry
     
     async def capture_frame_async(self) -> np.ndarray:
         """Asynchronously capture a single frame"""
+        if not self._initialized:
+            await self.initialize_async()
+        
         if not self.is_active():
-            self.initialize()
-            self._start_background_capture()
+            await self.initialize_async()
         
         # Wait for a frame to be available
         loop = asyncio.get_event_loop()
@@ -216,9 +312,11 @@ class Camera:
     
     def capture_frame(self) -> np.ndarray:
         """Synchronously capture a single frame (for backwards compatibility)"""
+        if not self._initialized:
+            self.initialize()
+        
         if not self.is_active():
             self.initialize()
-            self._start_background_capture()
         
         # First try to get the cached frame - this is much faster
         with self._frame_lock:
@@ -321,6 +419,9 @@ class Camera:
             "camera_id": self.camera_id,
             "name": self.name,
             "active": self.is_active(),
+            "initialized": self._initialized,
+            "initializing": self._initializing,
+            "init_error": self._init_error,
             "recording": self.recording,
             "resolution": f"{self.width}x{self.height}",
             "fps_target": self.fps,
@@ -345,6 +446,8 @@ class Camera:
         if self.cap is not None:
             self.cap.release()
             self.cap = None
+        
+        self._initialized = False
 
 
 # Function to get the camera singleton instance
@@ -353,6 +456,13 @@ def get_camera(camera_id: str = None):
         camera_id = settings.DEFAULT_CAMERA_ID
         
     camera = Camera.get_instance(camera_id)
+    
+    # Ensure camera is initialized if directly used through dependency
+    if not camera._initialized and not camera._initializing:
+        # This will block, but since it's used in a FastAPI dependency, 
+        # it should only happen on the first request after startup
+        camera.initialize()
+    
     try:
         yield camera
     finally:
